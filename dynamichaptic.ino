@@ -144,7 +144,7 @@ void loop() {
       // 关闭时：先关制冷片，0.5s后关泵
       pwm24vWritePercent(0, 0);
       pwm24vWritePercent(2, 0);
-      delay(500);
+      delay(10000);
       pwm24vWritePercent(3, 0);
       Serial.println("COOL_SOLID OFF OK");
     }
@@ -223,12 +223,112 @@ void runSequence(String seq) {
         int ms = token.substring(4).toInt();
         delay(ms);
       } else {
-        Serial.println(token);
-        Serial.write(token.c_str(), token.length());
-        Serial.write('\n');
+        // 直接执行命令，而不是发送到串口
+        executeCommand(token);
       }
     }
     idx = next + 1;
   }
   Serial.println("SEQ END");
+}
+
+// ===================== 命令执行器 =====================
+void executeCommand(String cmd) {
+  // ===================== 电源控制 =====================
+  if (cmd == "POWER ON") {
+    digitalWrite(RELAY_POWER, HIGH);
+    powerOn = true;
+    Serial.println("POWER ON OK");
+  }
+  else if (cmd == "POWER OFF") {
+    digitalWrite(RELAY_POWER, LOW);
+    digitalWrite(RELAY_HEAT, LOW); // 强制热控关闭
+    powerOn = false;
+    heatOn = false;
+    Serial.println("POWER OFF OK");
+  }
+  // ===================== 热控控制（继电器上电） =====================
+  else if (cmd == "HEAT ON") {
+    if (powerOn) { // 必须先开电源
+      digitalWrite(RELAY_HEAT, HIGH);
+      heatOn = true;
+      Serial.println("HEAT ON OK");
+    } else {
+      Serial.println("ERR: POWER must be ON first");
+    }
+  }
+  else if (cmd == "HEAT OFF") {
+    digitalWrite(RELAY_HEAT, LOW);
+    heatOn = false;
+    Serial.println("HEAT OFF OK");
+  }
+  // ===================== 24V 外设：制冷凝固 =====================
+  else if (cmd == "COOL_SOLID ON") {
+    // 通道: 3 泵, 0/2 制冷片，仅0或100%
+    // 启动时：先开泵，0.5s后开制冷片
+    pwm24vWritePercent(3, 100);
+    delay(500);
+    pwm24vWritePercent(0, 100);
+    pwm24vWritePercent(2, 100);
+    Serial.println("COOL_SOLID ON OK");
+  }
+  else if (cmd == "COOL_SOLID OFF") {
+    // 关闭时：先关制冷片，0.5s后关泵
+    pwm24vWritePercent(0, 0);
+    pwm24vWritePercent(2, 0);
+    delay(500);
+    pwm24vWritePercent(3, 0);
+    Serial.println("COOL_SOLID OFF OK");
+  }
+  // ===================== 24V 外设：电磁铁散热 =====================
+  else if (cmd == "EM_COOL ON") {
+    pwm24vWritePercent(4, 100);
+    pwm24vWritePercent(14, 100);
+    Serial.println("EM_COOL ON OK");
+  }
+  else if (cmd == "EM_COOL OFF") {
+    pwm24vWritePercent(4, 0);
+    pwm24vWritePercent(14, 0);
+    Serial.println("EM_COOL OFF OK");
+  }
+  // ===================== 24V 外设：电阻加热片（ch1: 0/15/100%） =====================
+  else if (cmd.startsWith("HEATER ")) {
+    int val = cmd.substring(7).toInt();
+    int pwm = 0;
+    if (val <= 0) pwm = 0;
+    else if (val < 50) pwm = 15; // 兼容传入任意中间值，<50 视为15
+    else pwm = 100;
+    pwm24vWritePercent(1, pwm);
+    Serial.print("HEATER SET "); Serial.print(pwm); Serial.println("% OK");
+  }
+  // ===================== 24V 外设：溶剂加入泵（ch5: 30%） =====================
+  else if (cmd == "SOLVENT START") {
+    pwm24vWritePercent(5, 30);
+    Serial.println("SOLVENT START OK");
+  }
+  else if (cmd == "SOLVENT STOP") {
+    pwm24vWritePercent(5, 0);
+    Serial.println("SOLVENT STOP OK");
+  }
+  // ===================== 通道控制 =====================
+  else {
+    int ch, duty, dir;
+    if (sscanf(cmd.c_str(), "SET %d %d %d", &ch, &duty, &dir) == 3) {
+      int boardIndex = ch / 16;
+      int channelIndex = ch % 16;
+      if (boardIndex < 4) {
+        int dutyVal = map(duty, 0, 100, 0, 4095);
+        pwmBoards[boardIndex].setPWM(channelIndex, 0, dutyVal);
+        dirBoards[boardIndex].digitalWrite(channelIndex, dir);
+        Serial.print("SET OK CH=");
+        Serial.print(ch);
+        Serial.print(" Duty=");
+        Serial.print(duty);
+        Serial.print(" Dir=");
+        Serial.println(dir);
+      } else {
+        Serial.println("ERR: Invalid channel");
+      }
+    }
+  }
 }
